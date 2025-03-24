@@ -7,13 +7,17 @@ const FIELD_MAP = [
     'pet_name' => 'Имя питомца'
 ];
 
+const GROUP_MAP = [
+    'Владельцы питомцев' => 'pl41768'
+];
+
 const SENDSAY_CONFIG = [
     'login' => 'x_1742494340678122',
-    'sublogin' => 'goodvin',
-    'password' => 'V5LZk93vXVM1'
+    'api_key' => "18WH7WxqmfLTiBFUTfpU-_a9fiOpSsU7miUVNxXLhO8rBut39mrGM5tHUA63iopfC3BRQt-s28mUmcg"
 ];
 
 $errors = [];
+$data = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach (VALIDATION_FIELDS as $field) {
@@ -26,73 +30,108 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($field === 'email' && !isset($errors['email']) && !filter_var($value, FILTER_VALIDATE_EMAIL)) {
             $errors[$field] = "Некорректный формат e-mail.";
         }
+
+        $data[$field] = $value;
     }
 
     if (empty($errors)) {
-        $sendSay = new SendsayService(SENDSAY_CONFIG['login'], SENDSAY_CONFIG['sublogin'], SENDSAY_CONFIG['password']);
-        $sendSay->auth();
-        echo '<div class="alert alert-success">Регистрация успешна!</div>';
+        $sendSay = new SendsayService(SENDSAY_CONFIG['login'], SENDSAY_CONFIG['api_key']);
+        $response = $sendSay->addNewUser($data, 'Владельцы питомцев');
+
+        if ($response['status'] === 200) {
+            $response = $sendSay->sendEmail($data, 'Владельцы питомцев');
+            if ($response['status'] === 200) {
+                echo '<div class="alert alert-success">Регистрация успешна! Мы отправили вам на почту письмо с подтверждением данных.</div>';
+                $_POST = [];
+            }
+        } else {
+            echo '<div class="alert alert-error">' . $response['error'] . '</div>';
+        }
+
     }
 }
 
 class SendsayService
 {
     private string $login;
-    private string $sublogin;
-    private string $password;
+    private string $api_key;
     private string $api_url;
-    private string $session;
 
-    public function __construct(string $login, string $sublogin, string $password)
+    public function __construct(string $login, string $api_key)
     {
         $this->login = $login;
-        $this->sublogin = $sublogin;
-        $this->password = $password;
+        $this->api_key = $api_key;
         $this->api_url = sprintf('https://api.sendsay.ru/general/api/v100/json/%s/', $login);
     }
 
-    public function send(array $data)
+    public function addNewUser(array $data, string $groupName): array
     {
-        //
-    }
+        $groupId = GROUP_MAP[$groupName];
 
-    public function auth(): array
-    {
-        $request = [
-            'action' => 'login',
-            'login' => $this->login,
-            'sublogin' => $this->sublogin,
-            'passwd' => $this->password
+        $data = [
+            "action" => "member.set",
+            "email" => $data['email'],
+            "apikey" => $this->api_key,
+            "addr_type" => "email",
+            "force_subscribe" => true,
+            "datakey" => [
+                ["base.firstName", "set", $data['name']],
+                ["custom.pet_name", "set", $data['pet_name']],
+                ["custom.pet_category", "set", $data['pet_category']],
+                ["-group.{$groupId}", "set", "1"]
+            ]
         ];
 
-        $response = $this->curlRequest($request);
-
-        if (isset($response['errors'])) {
-            die('Ошибка авторизации в Sendsay: ' . json_encode($response['errors']));
-        }
-
-        $this->session = $response['session'];
+        return $this->curlRequest($data);
     }
 
-    private function curlRequest($data)
+    public function sendEmail(array $data, string $groupName): array
     {
-        $curl = curl_init($this->api_url);
-        curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($curl, CURLOPT_POST, true);
-        curl_setopt($curl, CURLOPT_POSTFIELDS, json_encode($data));
-        curl_setopt($curl, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+        $data = [
+            "action" => "issue.send",
+            "email" => $data["email"],
+            "apikey" => $this->api_key,
+            "sendwhen" => "now",
+            "group" => "personal",
+            "letter" => [
+                "subject" => "Подтверждение регистрации",
+                "from.name" => "EMAILMATRIX",
+                "from.email" => "denis.sazonov@swipeandlike.me",
+                "draft.id" => 60,
+            ],
+            "extra" => [
+                "confirm_link" => "https://emailmatrix.ru/"
+            ]
+        ];
 
-        $response = curl_exec($curl);
+        return $this->curlRequest($data);
+    }
 
-        if (curl_errno($curl)) {
-            echo '<div class="alert alert-success">Ошибка cURL!</div>';
-            return;
-//            die('Ошибка cURL: ' . curl_error($curl));
+    private function curlRequest($data): array
+    {
+        $ch = curl_init($this->api_url);
+
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json'
+        ]);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+        if (curl_errno($ch)) {
+            return [
+                'status' => $httpCode,
+                'error' => curl_error($ch)
+            ];
         }
 
-        curl_close($curl);
-
-        return json_decode($response, true);
+        return [
+            'status' => $httpCode,
+            'response' => $response
+        ];
     }
 }
 
